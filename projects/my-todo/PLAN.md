@@ -8,7 +8,7 @@
 ## 接口定义
 - **数据结构**:
   `tasks`: `list[dict]`，每个字典包含键 `id` (int), `description` (str), `done` (bool)。
-- **函数签名**:
+- **函数签名**（必须严格遵循，不得添加默认参数）:
   `load_tasks(filepath: Path) -> list[dict]`: 从指定JSON文件加载任务列表，文件不存在则返回空列表。
   `save_tasks(tasks: list[dict], filepath: Path) -> None`: 将任务列表保存到指定JSON文件。
   `add_task(tasks: list[dict], description: str) -> list[dict]`: 向列表追加新任务（ID自增），返回更新后的列表。

@@ -5,8 +5,7 @@ from pathlib import Path
 
 DATA_FILE = Path("todos.json")
 
-
-def load_tasks(filepath: Path = DATA_FILE) -> list[dict]:
+def load_tasks(filepath: Path) -> list[dict]:
     """从指定JSON文件加载任务列表，文件不存在则返回空列表。"""
     if not filepath.exists():
         return []
@@ -19,12 +18,10 @@ def load_tasks(filepath: Path = DATA_FILE) -> list[dict]:
     except (json.JSONDecodeError, IOError):
         return []
 
-
-def save_tasks(tasks: list[dict], filepath: Path = DATA_FILE) -> None:
+def save_tasks(tasks: list[dict], filepath: Path) -> None:
     """将任务列表保存到指定JSON文件。"""
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(tasks, f, ensure_ascii=False, indent=2)
-
 
 def add_task(tasks: list[dict], description: str) -> list[dict]:
     """向列表追加新任务（ID自增），返回更新后的列表。"""
@@ -39,7 +36,6 @@ def add_task(tasks: list[dict], description: str) -> list[dict]:
     })
     return tasks
 
-
 def list_tasks(tasks: list[dict]) -> None:
     """将任务列表格式化并打印到标准输出。"""
     if not tasks:
@@ -49,7 +45,6 @@ def list_tasks(tasks: list[dict]) -> None:
         status = "[x]" if task["done"] else "[ ]"
         print(f'{task["id"]} {status} {task["description"]}')
 
-
 def done_task(tasks: list[dict], task_id: int) -> list[dict]:
     """根据ID查找任务并标记其done为True，返回更新后的列表。若ID无效则提示错误。"""
     for task in tasks:
@@ -58,7 +53,6 @@ def done_task(tasks: list[dict], task_id: int) -> list[dict]:
             return tasks
     print(f"Error: Task with id {task_id} not found.")
     return tasks
-
 
 def main() -> None:
     """应用入口，创建argparse.ArgumentParser，定义子命令，解析参数并调度对应功能函数。"""
@@ -79,17 +73,16 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
-    tasks = load_tasks()
+    tasks = load_tasks(DATA_FILE)
 
     if args.command == "add":
         tasks = add_task(tasks, args.description)
-        save_tasks(tasks)
+        save_tasks(tasks, DATA_FILE)
     elif args.command == "list":
         list_tasks(tasks)
     elif args.command == "done":
         tasks = done_task(tasks, args.id)
-        save_tasks(tasks)
-
+        save_tasks(tasks, DATA_FILE)
 
 if __name__ == "__main__":
     main()
