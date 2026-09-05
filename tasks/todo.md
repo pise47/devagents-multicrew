@@ -53,8 +53,7 @@
 - [x] README 复盘笔记补 Demo B + 双轨对比 + anthropic 适配器实测结论（system 顶层字段 bug 教训）
 - [x] 双轨对照: tp 端 208s/15.6k vs 按量 510s/45.5k——修复链未触发轮次更少
 
-## ★ Checkpoint 2
-- [ ] 真 API 产物 + 费用账单复盘给用户；git 建仓提示；记忆更新（项目档案/决策）
-
-## ★ Checkpoint 2
-- [ ] 真 API 产物 + 费用账单复盘给用户；git 建仓提示；记忆更新（项目档案/决策）
+## ★ Checkpoint 2 ✅
+- [x] 真 API 产物 + 账单复盘呈现用户；git 建仓（86067b8）+ 首次提交
+- [x] 记忆更新：project-devagents.md + MEMORY.md 索引 + tool-configs 双轨实测 + decisions-log ToS 破例 + LanceDB 双写 + last-session 摘要
+- [x] /review 五轴审查（code-reviewer 34 次工具调用实测复现）：1 Critical + 8 Important 全修复 + 24 条回归测试 → 128 全绿，提交 d4e9267
