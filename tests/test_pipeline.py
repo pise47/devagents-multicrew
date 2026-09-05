@@ -226,6 +226,21 @@ def test_test_agent_cannot_write_source(tmp_path, fake_llm):
     assert len([c for c in fake_llm.calls if c["model"] == "m-test"]) == 2
 
 
+def test_test_verdict_is_overwrite_not_append(tmp_path, fake_llm):
+    """回归: 修复轮后 TEST.md 只保留最新执行结论——历史 FAIL 残留会误导 review 误报阻断。"""
+    script = happy_script()
+    script["m-code"] += code_n(1)
+    fake_llm.script = script
+    cfg = make_pipe_config(tmp_path)
+    # 第一次执行 FAIL（真实 runner 脚本），修复后 PASS
+    summary, _, ws = run_pipeline(tmp_path, cfg, fake_llm, runner_verdicts=["FAIL", "PASS"])
+    assert summary["status"] == "SUCCESS"
+    text = (ws / "TEST.md").read_text(encoding="utf-8")
+    assert text.count("## 执行结果") == 1, "旧执行结论必须被覆盖而非追加"
+    assert "verdict: PASS" in text
+    assert "verdict: FAIL" not in text
+
+
 def test_retry_attempts_all_recorded(tmp_path, fake_llm):
     """阶段重试的中间尝试也要入报告（usage 与 stage token 可对账）。"""
     script = happy_script()

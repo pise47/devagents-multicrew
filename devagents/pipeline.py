@@ -324,20 +324,30 @@ class Pipeline:
         return outcome
 
     def _append_test_verdict(self, outcome) -> None:
-        """把真实执行结论机械追加进 TEST.md，使 review 快照天然携带执行结果。"""
+        """机械结论以**覆盖式**写入 TEST.md（每次先清旧结论块再写新的）。
+
+        修复轮后 review 读 TEST.md 必须只看到最新一次执行结果——
+        历史 FAIL 段若残留，review 会误把"已修复的旧失败"判成当前不稳定
+        （2026-09-05 my-todo 实测: 误报阻断 → 修复轮耗尽 FAILED）。
+        """
         try:
+            p = self.out_root / "TEST.md"
+            if not p.exists():
+                return
+            text = p.read_text(encoding="utf-8")
+            marker = "\n## 执行结果（机械写入，非 LLM 结论）"
+            if marker in text:
+                text = text.split(marker, 1)[0].rstrip("\n")
             verdict = outcome.verdict
             tail = _head(outcome.stdout_tail, 800)
             block = (
-                f"\n\n## 执行结果（机械写入，非 LLM 结论）\n\n"
+                f"{text}\n\n## 执行结果（机械写入，非 LLM 结论）\n\n"
                 f"- verdict: {verdict}\n- exit_code: {outcome.exit_code}\n"
                 f"- 耗时: {outcome.elapsed_s:.1f}s\n"
+                f"- 轮次: 当前为最新一次执行\n"
                 f"```\n{tail}\n```\n"
             )
-            p = self.out_root / "TEST.md"
-            if p.exists():
-                with open(p, "a", encoding="utf-8") as fh:
-                    fh.write(block)
+            p.write_text(block, encoding="utf-8")
         except OSError:
             pass  # 结论写不进去时降级（stage 记录里仍有 verdict）
 

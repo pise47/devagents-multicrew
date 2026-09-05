@@ -159,7 +159,8 @@ def load_config(require_key: bool = True) -> Config:
         )
 
     runs_rel = Path(str((raw.get("storage") or {}).get("runs_dir", "runs")))
-    runs_dir = runs_rel if runs_rel.is_absolute() else PACKAGE_ROOT / runs_rel
+    # 相对路径基于配置文件所在目录——测试用临时配置时 runs 不污染真实 runs/
+    runs_dir = runs_rel if runs_rel.is_absolute() else path.parent / runs_rel
 
     return Config(
         llm=LlmCfg(

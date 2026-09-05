@@ -128,3 +128,11 @@ def test_repr_never_leaks_api_key(no_real_toml, monkeypatch):
     monkeypatch.setenv("MIMO_API_KEY", "sk-super-secret-xyz")
     no_real_toml.write_text("", encoding="utf-8")
     assert "super-secret" not in repr(cfg.load_config().llm)
+
+
+def test_runs_dir_follows_config_location(no_real_toml, monkeypatch):
+    """相对 runs_dir 基于配置文件目录——测试/临时配置不污染真实 runs/。"""
+    monkeypatch.setenv("MIMO_API_KEY", "sk")
+    no_real_toml.write_text("[storage]\nruns_dir='runs'\n", encoding="utf-8")
+    conf = cfg.load_config()
+    assert conf.runs_dir == no_real_toml.parent / "runs"
