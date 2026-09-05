@@ -103,3 +103,28 @@ def test_protocol_defaults_to_openai(no_real_toml, monkeypatch):
     monkeypatch.setenv("MIMO_API_KEY", "sk")
     no_real_toml.write_text("", encoding="utf-8")
     assert cfg.load_config().llm.protocol == "openai"
+
+
+def test_require_key_false_loads_without_key(no_real_toml, monkeypatch):
+    """report 只读路径: require_key=False 时无 key 也可加载（api_key 为空）。"""
+    no_real_toml.write_text("", encoding="utf-8")
+    monkeypatch.delenv("MIMO_API_KEY", raising=False)
+    conf = cfg.load_config(require_key=False)
+    assert conf.llm.api_key == ""
+
+
+def test_invalid_int_values_rejected(no_real_toml, monkeypatch):
+    """负值/字符串配置必须 ConfigError（防 gate_retry=-1 击穿状态机）。"""
+    monkeypatch.setenv("MIMO_API_KEY", "sk")
+    no_real_toml.write_text("[pipeline]\ngate_retry=-1\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        cfg.load_config()
+    no_real_toml.write_text("[pipeline]\nfix_rounds_max='two'\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        cfg.load_config()
+
+
+def test_repr_never_leaks_api_key(no_real_toml, monkeypatch):
+    monkeypatch.setenv("MIMO_API_KEY", "sk-super-secret-xyz")
+    no_real_toml.write_text("", encoding="utf-8")
+    assert "super-secret" not in repr(cfg.load_config().llm)

@@ -1,11 +1,14 @@
 """流水线状态机（SPEC §2/§4）: 五阶段串行 + 产物 gate + 修复链 + 终态判定。
 
 核心原则: LLM 只产内容，一切 PASS/FAIL/终态由本模块机械规则判定。
-- gate 失败 / 信封解析失败 → 本阶段重试 gate_retry 次 → 仍失败 STOPPED
+- gate 失败 / 信封解析失败 / 越权路径 → 本阶段重试 gate_retry 次 → 仍失败 STOPPED
 - 统一循环: 测试执行 → PASS 进 review；FAIL 进修复轮；修复后必回测试（test 先于 review 双门）
 - review 阻断项非空 → 修复轮（携带阻断项清单）→ 回测试 → 复审
 - API 失败 / TIMEOUT / ERROR → STOPPED（不消耗修复轮计数、不进 FAILED）
-- code 越界新增源文件 = gate FAIL + 下次尝试前清理（_prune_out_of_plan）
+- **每阶段信封只允许写本阶段产出路径**（allowed_paths 机械锁，越权即阶段重试）:
+  spec→SPEC.md / arch→PLAN.md / code,code_fix→PLAN source+requirements.txt /
+  test→PLAN test 段+TEST.md / review→REVIEW.md
+- 每次 runner 执行后，机械结论机械写入 TEST.md（review 的输入因此包含真实执行结果）
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from devagents import context, report, roles
 from devagents.llm import LLMError
 from devagents.protocol import ProtocolError, parse_envelopes, resolve_safe_path
 
-# code/fix 阶段允许写的非清单文件（流水线自身产物与依赖清单）
+# code/fix 阶段允许写的非清单文件（依赖清单）
 _DOC_ALLOWED = {"SPEC.md", "PLAN.md", "TEST.md", "REVIEW.md", "requirements.txt"}
 _SECTION_RE = re.compile(r"^-\s+(source|test):\s*(\S+)\s*(?:#.*)?$", re.MULTILINE)
 _EXEMPT_DIR = re.compile(r"(^|/)(__pycache__|\.pytest_cache|\.venv|venv|htmlcov|\.git)(/|$)")
@@ -56,6 +59,11 @@ def parse_plan_file_list(text: str) -> dict[str, list[str]]:
     return out
 
 
+def project_kind_of(plan_tests: list[str]) -> str:
+    """项目类型由 PLAN 的 test 清单机械决定（不信任工作区文件存在性）。"""
+    return "frontend" if "smoke.json" in plan_tests else "python"
+
+
 def gate_arch(ws: Path) -> tuple[bool, str]:
     text = _read(ws, "PLAN.md")
     if text is None:
@@ -82,15 +90,21 @@ def _ws_files(ws: Path) -> list[str]:
     return out
 
 
-def gate_code(ws: Path, plan_sources: list[str], plan_tests: list[str] | None = None) -> tuple[bool, str]:
-    """缺文件 FAIL；越界新增源文件 FAIL（allowed = source ∪ test ∪ 流水线文档）。"""
+def _extra_files(ws: Path, allowed: set[str]) -> list[str]:
+    return [rel for rel in _ws_files(ws) if rel not in allowed]
+
+
+def gate_code(ws: Path, plan_sources: list[str], plan_tests: list[str] | None = None, kind: str = "python") -> tuple[bool, str]:
+    """缺 source 文件 FAIL；越界新增 FAIL；Python 项目缺 requirements.txt FAIL。"""
     missing = [f for f in plan_sources if not (ws / f).exists()]
     if missing:
         return False, f"PLAN 清单文件缺失: {missing}"
     allowed = set(plan_sources) | set(plan_tests or []) | _DOC_ALLOWED
-    extra = [rel for rel in _ws_files(ws) if rel not in allowed]
+    extra = _extra_files(ws, allowed)
     if extra:
         return False, f"清单外新增文件（越界）: {extra}"
+    if kind == "python" and not (ws / "requirements.txt").exists():
+        return False, "缺 requirements.txt（Python 项目依赖清单，强制）"
     return True, "清单文件齐备且无越界"
 
 
@@ -108,12 +122,20 @@ def _prune_out_of_plan(ws: Path, plan_sources: list[str], plan_tests: list[str] 
     return removed
 
 
-def gate_test(ws: Path, plan_tests: list[str]) -> tuple[bool, str]:
+def gate_test(ws: Path, plan_tests: list[str], plan_sources: list[str] | None = None) -> tuple[bool, str]:
+    """PLAN test 段文件全在 + TEST.md 在；test-agent 越界新增文件也 FAIL。
+
+    allowed = plan_tests ∪ plan_sources（code 阶段已落盘的源文件不是越界）∪ 流水线文档。
+    """
     missing = [f for f in plan_tests if not (ws / f).exists()]
     if missing:
         return False, f"PLAN 测试文件缺失: {missing}"
     if not (ws / "TEST.md").exists():
         return False, "缺 TEST.md"
+    allowed = set(plan_tests) | set(plan_sources or []) | _DOC_ALLOWED
+    extra = [rel for rel in _ws_files(ws) if rel not in allowed]
+    if extra:
+        return False, f"test-agent 越界新增文件: {extra}"
     return True, "测试文件齐备"
 
 
@@ -153,6 +175,8 @@ class Pipeline:
         self.fix_rounds_used = 0
         self._plan_sources: list[str] = []
         self._plan_tests: list[str] = []
+        self._kind = "python"
+        self._last_outcome = None
 
     # ---- 对外 ----
 
@@ -164,21 +188,24 @@ class Pipeline:
         self._fix_max = p.fix_rounds_max
         self._gate_retry = p.gate_retry
 
-        # ① spec → ② arch（arch 后解析 PLAN 文件清单，锁定本轮范围）
-        if self._run_llm_stage("spec", self.task, gate_spec) != "ok":
+        # ① spec → ② arch（arch 后解析 PLAN 文件清单与项目类型，锁定本轮范围）
+        if self._run_llm_stage("spec", self.task, gate_spec, allowed={"SPEC.md"}) != "ok":
             return self._summary("STOPPED", started)
-        if self._run_llm_stage("arch", self._snapshot(), gate_arch) != "ok":
+        if self._run_llm_stage("arch", self._snapshot(), gate_arch, allowed={"PLAN.md"}) != "ok":
             return self._summary("STOPPED", started)
         plan = _read(self.out_root, "PLAN.md") or ""
         self._plan_sources = parse_plan_file_list(plan)["source"]
         self._plan_tests = parse_plan_file_list(plan).get("test", [])
+        self._kind = project_kind_of(self._plan_tests)
+        code_allowed = set(self._plan_sources) | {"requirements.txt"}
 
-        # ③ code（越界 = gate FAIL + 尝试前清理）
-        if self._run_llm_stage("code", self._snapshot(), self._gate_code_now, prune=True) != "ok":
+        # ③ code（allowed 锁 + gate 越界双查 + 尝试前清理）
+        if self._run_llm_stage("code", self._snapshot(), self._gate_code_now, prune=True, allowed=code_allowed) != "ok":
             return self._summary("STOPPED", started)
 
         # ④ test-agent 设计测试（一次性；修复轮重跑同一套测试，不重新设计）
-        if self._run_llm_stage("test", self._snapshot(), self._gate_test_now) != "ok":
+        test_allowed = set(self._plan_tests) | {"TEST.md"}
+        if self._run_llm_stage("test", self._snapshot(), self._gate_test_now, allowed=test_allowed) != "ok":
             return self._summary("STOPPED", started)
 
         # ⑤ 统一验证循环: 测试执行 → review 复审（双门），修复后必回测试
@@ -187,17 +214,17 @@ class Pipeline:
             if outcome.verdict in ("TIMEOUT", "ERROR"):
                 return self._summary("STOPPED", started)  # 修复轮内中断不耗计数
             if outcome.verdict == "FAIL":
-                st = self._enter_fix_round(f"测试失败\n{_head(outcome.stdout_tail)}")
+                st = self._enter_fix_round(f"测试失败\n{_head(outcome.stdout_tail)}", code_allowed)
                 if st != "ok":
                     return self._summary("FAILED" if st == "budget" else "STOPPED", started)
                 continue  # 修复后回测试（test 先于 review）
-            # PASS → review
-            if self._run_llm_stage("review", self._snapshot(), gate_review_structure) != "ok":
+            # PASS → review（机械执行结果已在 TEST.md 结论段，快照即携带）
+            if self._run_llm_stage("review", self._snapshot(), gate_review_structure, allowed={"REVIEW.md"}) != "ok":
                 return self._summary("STOPPED", started)
             blockers, _ = gate_review(self.out_root)
             if not blockers:
                 return self._summary("SUCCESS", started)
-            st = self._enter_fix_round("审查阻断项:\n" + "\n".join(f"- {b}" for b in blockers))
+            st = self._enter_fix_round("审查阻断项:\n" + "\n".join(f"- {b}" for b in blockers), code_allowed)
             if st != "ok":
                 return self._summary("FAILED" if st == "budget" else "STOPPED", started)
             # 修复后回测试重跑 → 再复审
@@ -205,19 +232,18 @@ class Pipeline:
     # ---- 阶段执行 ----
 
     def _gate_code_now(self, ws: Path) -> tuple[bool, str]:
-        return gate_code(ws, self._plan_sources, self._plan_tests)
+        return gate_code(ws, self._plan_sources, self._plan_tests, self._kind)
 
     def _gate_test_now(self, ws: Path) -> tuple[bool, str]:
-        return gate_test(ws, self._plan_tests)
+        return gate_test(ws, self._plan_tests, self._plan_sources)
 
-    def _run_llm_stage(self, stage: str, user_text: str, gate_fn, prune: bool = False) -> str:
-        """一次 LLM 阶段: 信封解析 + 写文件 + gate；失败按 gate_retry 重试后 STOPPED。"""
+    def _run_llm_stage(self, stage: str, user_text: str, gate_fn, prune: bool = False, allowed: set[str] | None = None) -> str:
+        """一次 LLM 阶段: 信封解析 → 路径锁校验 → 写文件 → gate；失败按 gate_retry 重试。
+
+        每次尝试都立即 append 自己的记录（不丢中间尝试），保证 report 可审计。
+        """
         attempts = 1 + self._gate_retry
         for attempt in range(attempts):
-            if prune and (self._plan_sources or self._plan_tests):
-                removed = _prune_out_of_plan(self.out_root, self._plan_sources, self._plan_tests)
-                if removed:
-                    user_text += f"\n[前置清理] 已删除清单外文件: {removed}"
             record = {
                 "name": stage if attempt == 0 else f"{stage}(重试{attempt})",
                 "model": roles.model_for(self.cfg, stage),
@@ -227,6 +253,10 @@ class Pipeline:
                 "completion_tokens": 0,
                 "error": None,
             }
+            if prune and (self._plan_sources or self._plan_tests):
+                removed = _prune_out_of_plan(self.out_root, self._plan_sources, self._plan_tests)
+                if removed:
+                    user_text += f"\n[前置清理] 已删除清单外文件: {removed}"
             try:
                 result = self.llm.chat(roles.assemble_messages(stage, user_text), model=record["model"])
             except LLMError as e:
@@ -238,20 +268,28 @@ class Pipeline:
                 blocks = parse_envelopes(result.content)
                 if not blocks:
                     raise ProtocolError("响应中未找到任何 ```path= 信封块")
+                if allowed is not None:
+                    offenders = sorted({rel for rel, _ in blocks if rel not in allowed})
+                    if offenders:
+                        raise ProtocolError(
+                            f"越权路径（本阶段只允许写 {sorted(allowed)}）: {offenders}"
+                        )
+                for rel, content in blocks:
+                    target = resolve_safe_path(self.out_root, rel)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        target.write_text(content, encoding="utf-8")
+                    except OSError as e:
+                        raise ProtocolError(f"写入失败 {rel}: {e}") from e
+                    record["files"].append(rel)
             except ProtocolError as e:
                 record["error"] = f"信封解析失败: {e}"
                 if attempt < attempts - 1:
-                    user_text += f"\n[阶段重试 {attempt + 1}] 上次输出信封解析失败: {e}。请严格按 ```path= 格式输出。"
+                    user_text += f"\n[阶段重试 {attempt + 1}] 上次输出未通过: {e}。请严格按 ```path= 格式且只写允许路径。"
+                    self.stages.append(record)  # 中间尝试也入报告
                     continue
                 self.stages.append(record)
                 return "stopped"
-            wrote: list[str] = []
-            for rel, content in blocks:
-                target = resolve_safe_path(self.out_root, rel)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
-                wrote.append(rel)
-            record["files"] = wrote
             ok, msg = gate_fn(self.out_root)
             if ok:
                 record["state"] = "done"
@@ -260,15 +298,18 @@ class Pipeline:
             record["error"] = f"产物 gate 校验失败: {msg}"
             if attempt < attempts - 1:
                 user_text += f"\n[阶段重试 {attempt + 1}] 上次产物未通过校验: {msg}。请修正后重新输出。"
-        self.stages.append(record)
-        return "stopped"
+                self.stages.append(record)  # 中间尝试也入报告
+                continue
+            self.stages.append(record)
+            return "stopped"
 
-    def _execute_tests(self) -> object:
-        outcome = (
-            self.runner.run_smoke(self.out_root)
-            if (self.out_root / "smoke.json").exists()
-            else self.runner.run_python_tests(self.out_root)
-        )
+    def _execute_tests(self):
+        """按 PLAN 项目类型机械选择执行方式（不信任工作区文件存在性）。"""
+        if self._kind == "frontend":
+            outcome = self.runner.run_smoke(self.out_root)
+        else:
+            outcome = self.runner.run_python_tests(self.out_root)
+        self._last_outcome = outcome
         self.stages.append({
             "name": "test:执行",
             "model": "runner",
@@ -278,17 +319,37 @@ class Pipeline:
             "completion_tokens": 0,
             "error": None if outcome.verdict == "PASS" else _head(outcome.stdout_tail),
         })
+        # 机械结论写入 TEST.md（SPEC §4.3: 结论归 runner/pipeline，LLM 文本只是分析）
+        self._append_test_verdict(outcome)
         return outcome
 
-    def _enter_fix_round(self, defect_report: str) -> str:
-        """修复轮: code_fix（SPEC+PLAN+代码树+缺陷报告）→ 返回 ok/budget/stopped。"""
+    def _append_test_verdict(self, outcome) -> None:
+        """把真实执行结论机械追加进 TEST.md，使 review 快照天然携带执行结果。"""
+        try:
+            verdict = outcome.verdict
+            tail = _head(outcome.stdout_tail, 800)
+            block = (
+                f"\n\n## 执行结果（机械写入，非 LLM 结论）\n\n"
+                f"- verdict: {verdict}\n- exit_code: {outcome.exit_code}\n"
+                f"- 耗时: {outcome.elapsed_s:.1f}s\n"
+                f"```\n{tail}\n```\n"
+            )
+            p = self.out_root / "TEST.md"
+            if p.exists():
+                with open(p, "a", encoding="utf-8") as fh:
+                    fh.write(block)
+        except OSError:
+            pass  # 结论写不进去时降级（stage 记录里仍有 verdict）
+
+    def _enter_fix_round(self, defect_report: str, code_allowed: set[str]) -> str:
+        """修复轮: code_fix（SPEC+PLAN+代码树+缺陷报告）→ 返回 ok/stopped（预算耗尽=FAILED 由调用方定）。"""
         if self.fix_rounds_used >= self._fix_max:
             return "budget"
         self.fix_rounds_used += 1
         user_text = self._snapshot() + "\n\n# 【缺陷报告】\n" + defect_report
-        state = self._run_llm_stage(roles.FIX_STAGE, user_text, self._gate_code_now, prune=True)
+        state = self._run_llm_stage(roles.FIX_STAGE, user_text, self._gate_code_now, prune=True, allowed=code_allowed)
         if state != "ok":
-            return "stopped" if state == "stopped" else "budget"
+            return state  # stopped：API/解析/gate 耗尽（STOPPED）；预算耗尽已在上方拦截
         self.stages.append({
             "name": f"fix#{self.fix_rounds_used}",
             "model": roles.model_for(self.cfg, roles.FIX_STAGE),
@@ -303,14 +364,17 @@ class Pipeline:
     # ---- 上下文与汇总 ----
 
     def _snapshot(self) -> str:
-        text, _ = context.assemble_context(self.out_root, self._budget, self._file_limit)
+        text, meta = context.assemble_context(self.out_root, self._budget, self._file_limit)
+        if meta["truncated"]:
+            names = ", ".join(f"{t['path']}({t['reason']})" for t in meta["truncated"])
+            text += f"\n\n[未载入文件（超预算/超限，本次上下文不可见）: {names}]"
         return text
 
     def _summary(self, status: str, started: float) -> dict:
         u = self.llm.usage
         return {
             "run_id": report.new_run_id(),
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started)),
             "task": self.task,
             "workspace": str(self.out_root),
             "status": status,

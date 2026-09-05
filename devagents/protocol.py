@@ -14,6 +14,7 @@ _BLOCK_RE = re.compile(r"^```path=(.+?)\s*$")
 
 _PATH_FORBIDDEN = ("/", "\\", ":")  # 绝对 / 盘符直接拒
 _SEGMENT_BANNED = {"..", "."}
+_WIN_ILLEGAL = set('<>"|?*')  # Windows 文件名字符限制（write_text 会 OSError 的提前拒）
 
 
 class ProtocolError(RuntimeError):
@@ -30,11 +31,16 @@ def validate_rel_path(raw: str) -> str:
         raise ProtocolError("空路径")
     if path.startswith(_PATH_FORBIDDEN) or ":" in path:
         raise ProtocolError(f"非法路径（绝对/盘符）: {raw!r}")
+    if any(ch in _WIN_ILLEGAL for ch in path) or any(ord(ch) < 32 for ch in path):
+        raise ProtocolError(f"路径含非法字符（Windows 文件名限制）: {raw!r}")
     segments = path.split("/")
     # .. 段直接拒绝（不是过滤）——穿越必须显式失败
     if ".." in segments:
         raise ProtocolError(f"路径含 .. 逃逸: {raw!r}")
     segments = [seg for seg in segments if seg not in _SEGMENT_BANNED]  # 仅剥除 "." 等无害段
+    # Windows 段尾点/空格限制要在剥除 "." 段之后再查（防误杀 ./a.py 这类前缀）
+    if any(seg.endswith((" ", ".")) or seg.startswith(" ") for seg in segments):
+        raise ProtocolError(f"路径段首尾空格/点不合法: {raw!r}")
     normalized = PurePosixPath(*segments).as_posix() if segments else ""
     if not normalized or normalized.startswith(_PATH_FORBIDDEN):
         raise ProtocolError(f"非法路径: {raw!r}")

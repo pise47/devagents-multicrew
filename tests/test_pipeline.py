@@ -86,6 +86,8 @@ def test_full_chain_success(tmp_path, fake_llm):
     assert runner.calls == [("python", 1)]
     assert summary["fix_rounds"]["used"] == 0
     assert summary["usage"]["calls"] == 5
+    # runner 结论机械写入 TEST.md（review 输入因此携带真实执行结果）
+    assert "verdict: PASS" in (ws / "TEST.md").read_text(encoding="utf-8")
 
 
 def test_review_blocker_then_fix_then_clean(tmp_path, fake_llm):
@@ -171,7 +173,7 @@ def test_gate_retry_once_then_stopped(tmp_path, fake_llm):
 
 
 def test_gate_recovers_after_retry_with_hint(tmp_path, fake_llm):
-    """越界新增文件 → gate 失败重试 → 重试提示含原因 → 第二次合规 → SUCCESS。"""
+    """越界路径 → 路径锁 ProtocolError 重试（文件未落盘）→ 第二次合规 → SUCCESS。"""
     script = happy_script()
     script["m-code"] = [res(S.CODE_ROGUE_EXTRA), res(S.code_full_response())]
     fake_llm.script = script
@@ -180,7 +182,61 @@ def test_gate_recovers_after_retry_with_hint(tmp_path, fake_llm):
     assert not (ws / "rogue_extra.py").exists()
     code_calls = [c for c in fake_llm.calls if c["model"] == "m-code"]
     assert len(code_calls) == 2
-    assert "清单外" in code_calls[1]["messages"][1]["content"] or "越界" in code_calls[1]["messages"][1]["content"]
+    hint = code_calls[1]["messages"][1]["content"]
+    assert any(k in hint for k in ("越权", "清单外", "越界"))
+
+
+def test_review_cannot_rewrite_code(tmp_path, fake_llm):
+    """Critical 回归: review 越权在信封里偷写代码 → 路径锁拒绝且不落盘。
+
+    两轮都越权 → STOPPED；代码保持原样；runner 只执行过一次（无二次验证需求）。
+    """
+    script = happy_script()
+    tampered = S.env("REVIEW.md", S.REVIEW_OK) + S.env("todo.py", "print('REVIEW WROTE THIS')")
+    script["m-review"] = [res(tampered), res(tampered)]
+    fake_llm.script = script
+    summary, runner, ws = run_pipeline(tmp_path, make_pipe_config(tmp_path), fake_llm, runner_verdicts=["PASS"])
+    assert summary["status"] == "STOPPED"
+    assert "越权" in summary["stages"][-1]["error"]
+    assert "REVIEW WROTE THIS" not in (ws / "todo.py").read_text(encoding="utf-8")
+    assert runner.calls == [("python", 1)]  # 代码未被替换 → 没有二次执行
+
+
+def test_review_tamper_retry_recovers_without_touching_code(tmp_path, fake_llm):
+    """review 一次越权一次干净 → 重试恢复 SUCCESS，代码从未被碰（路径锁先于写盘）。"""
+    script = happy_script()
+    tampered = S.env("REVIEW.md", S.REVIEW_OK) + S.env("todo.py", "print('tamper')")
+    script["m-review"] = [res(tampered), res(S.review_response(blocker=False))]
+    fake_llm.script = script
+    summary, _, ws = run_pipeline(tmp_path, make_pipe_config(tmp_path), fake_llm, runner_verdicts=["PASS"])
+    assert summary["status"] == "SUCCESS"
+    assert "tamper" not in (ws / "todo.py").read_text(encoding="utf-8")
+    assert len([c for c in fake_llm.calls if c["model"] == "m-review"]) == 2
+
+
+def test_test_agent_cannot_write_source(tmp_path, fake_llm):
+    """test-agent 越权写 source → 路径锁拒绝 → 重试后干净通过，源文件不被碰。"""
+    script = happy_script()
+    rogue = S.env("test_todo.py", "x = 1") + S.env("TEST.md", S.TEST_MD_CONTENT) + S.env("todo.py", "print('tamper')")
+    script["m-test"] = [res(rogue), res(S.test_full_response())]
+    fake_llm.script = script
+    summary, _, ws = run_pipeline(tmp_path, make_pipe_config(tmp_path), fake_llm, runner_verdicts=["PASS"])
+    assert summary["status"] == "SUCCESS"
+    assert "tamper" not in (ws / "todo.py").read_text(encoding="utf-8")
+    assert len([c for c in fake_llm.calls if c["model"] == "m-test"]) == 2
+
+
+def test_retry_attempts_all_recorded(tmp_path, fake_llm):
+    """阶段重试的中间尝试也要入报告（usage 与 stage token 可对账）。"""
+    script = happy_script()
+    script["m-arch"] = [res(S.env("PLAN.md", S.PLAN_MISSING_SECTIONS)), res(S.plan_response())]
+    fake_llm.script = script
+    summary, _, _ = run_pipeline(tmp_path, make_pipe_config(tmp_path), fake_llm, runner_verdicts=["PASS"])
+    assert summary["status"] == "SUCCESS"
+    arch_rows = [s for s in summary["stages"] if s["name"].startswith("arch")]
+    assert len(arch_rows) == 2
+    assert arch_rows[0]["state"] == "error" and "gate" in arch_rows[0]["error"]
+    assert arch_rows[1]["state"] == "done"
 
 
 def test_parse_failure_retries_stage(tmp_path, fake_llm):
@@ -235,11 +291,13 @@ def test_gate_code_checks_plan_list_exactly(workspace):
 
     ws = workspace({"PLAN.md": S2.PLAN_OK})
     plan = parse_plan_file_list(S2.PLAN_OK)
-    assert gate_code(ws, plan["source"])[0] is False  # 缺 todo.py
-    ws2 = workspace({"PLAN.md": S2.PLAN_OK, "todo.py": "x=1"})
+    assert gate_code(ws, plan["source"])[0] is False  # 缺 todo.py + requirements
+    ws2 = workspace({"PLAN.md": S2.PLAN_OK, "todo.py": "x=1", "requirements.txt": "# ok"})
     assert gate_code(ws2, parse_plan_file_list(S2.PLAN_OK)["source"])[0] is True
-    ws3 = workspace({"PLAN.md": S2.PLAN_OK, "todo.py": "x=1", "rogue.py": "y=2"})
+    ws3 = workspace({"PLAN.md": S2.PLAN_OK, "todo.py": "x=1", "requirements.txt": "# ok", "rogue.py": "y=2"})
     assert gate_code(ws3, parse_plan_file_list(S2.PLAN_OK)["source"])[0] is False  # 越界
+    ws4 = workspace({"PLAN.md": S2.PLAN_OK, "todo.py": "x=1"})  # 无 requirements → python 项目 FAIL
+    assert gate_code(ws4, parse_plan_file_list(S2.PLAN_OK)["source"])[0] is False
 
 
 def test_gate_review_parses_blocking_list(workspace):

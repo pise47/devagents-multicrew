@@ -100,6 +100,24 @@ def test_missing_price_returns_none_cost(client, monkeypatch):
     assert client.total_cost() is None
 
 
+def test_unmapped_requests_exception_wrapped_as_network(client, monkeypatch):
+    """ChunkedEncodingError 等未显式映射的 requests 异常 → 必须收进 NetworkError（击穿兜底）。"""
+    from requests.exceptions import ChunkedEncodingError
+
+    calls = {"n": 0}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls["n"] += 1
+        raise ChunkedEncodingError("connection closed mid-chunk")
+
+    monkeypatch.setattr("devagents.llm.requests.post", fake_post)
+    with pytest.raises(NetworkError) as ei:
+        client.chat(_messages(), model="m1")
+    assert "请求异常" in str(ei.value)
+    assert calls["n"] == 2  # 瞬时 → transport 重试 1 次后抛
+    assert client.retries["transport"] == 1
+
+
 def test_network_error_classified_and_retried_once(client, monkeypatch):
     """瞬时类(Network) → transport 重试 1 次 → 仍失败则抛 NetworkError。"""
     _patch_post(

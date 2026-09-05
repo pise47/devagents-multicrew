@@ -123,9 +123,21 @@ def _conf_without_key_file(tmp_path) -> str:
     return str(p)
 
 
-def test_main_missing_key_exit_two(monkeypatch, tmp_path, capsys):
+def test_main_run_missing_key_exit_two(monkeypatch, tmp_path, capsys):
+    """run 必须 key → exit 2；report 只读历史不要求 key。"""
     monkeypatch.setenv("DEVAGENTS_CONFIG", _conf_without_key_file(tmp_path))
     monkeypatch.delenv("MIMO_API_KEY", raising=False)
-    code = cli.main(["report", "xxx"])
+    code = cli.main(["run", "x", "--out", str(tmp_path / "o")])
     assert code == 2
     assert "Token Plan" in capsys.readouterr().err
+
+
+def test_report_works_without_key(monkeypatch, tmp_path):
+    """key 过期/轮换时 report 照样能读历史报告（复盘场景）。"""
+    monkeypatch.setenv("DEVAGENTS_CONFIG", _conf_without_key_file(tmp_path))
+    monkeypatch.delenv("MIMO_API_KEY", raising=False)
+    import pytest as _pytest
+
+    with _pytest.raises(SystemExit) as ei:
+        cli.main(["report", "nope-123"])
+    assert ei.value.code != 2  # 不是 key 快速失败，而是找不到运行

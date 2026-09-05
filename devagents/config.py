@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -57,7 +57,7 @@ class LlmCfg:
     base_url: str
     key_env: str
     timeout_s: int
-    api_key: str  # 由 key_env 解析; 空 = 未配置
+    api_key: str = field(repr=False, default="")  # 由 key_env 解析; repr 永不打印密钥
     protocol: str = "openai"
     max_output_tokens: int = 16384
 
@@ -115,8 +115,19 @@ def _ensure_example_linked(target: Path) -> None:
     shutil.copyfile(EXAMPLE_CONFIG_PATH, target)
 
 
-def load_config() -> Config:
-    """加载配置。任何配置级问题 → ConfigError（含指引），供 cli 快速失败。"""
+def _as_int(section: str, key: str, value, minimum: int = 0) -> int:
+    """配置 int 字段: 类型错误/低于下限 → ConfigError（防 gate_retry=-1 之类击穿状态机）。"""
+    try:
+        n = int(value)
+    except (TypeError, ValueError) as e:
+        raise ConfigError(f"[{section}] {key}={value!r} 不是整数") from e
+    if n < minimum:
+        raise ConfigError(f"[{section}] {key}={n} 低于下限 {minimum}")
+    return n
+
+
+def load_config(require_key: bool = True) -> Config:
+    """加载配置。require_key=False 供 report 等只读子命令（无 key 也能看历史报告）。"""
     path = config_path()
     if not path.exists():
         _ensure_example_linked(path)
@@ -140,7 +151,7 @@ def load_config() -> Config:
     prices = raw.get("prices") or {}
 
     api_key = os.environ.get(str(llm_raw["key_env"]), "")
-    if not api_key:
+    if not api_key and require_key:
         raise ConfigError(
             f"缺少 API Key: 请设置环境变量 {llm_raw['key_env']}（按量 sk-key）。\n"
             f"⚠️ Token Plan key 仅限交互式使用，自动化脚本禁止（ToS 红线）。\n"
@@ -154,19 +165,19 @@ def load_config() -> Config:
         llm=LlmCfg(
             base_url=str(llm_raw["base_url"]),
             key_env=str(llm_raw["key_env"]),
-            timeout_s=int(llm_raw["timeout_s"]),
+            timeout_s=_as_int("llm", "timeout_s", llm_raw["timeout_s"], minimum=1),
             api_key=api_key,
             protocol=str(llm_raw["protocol"]),
-            max_output_tokens=int(llm_raw["max_output_tokens"]),
+            max_output_tokens=_as_int("llm", "max_output_tokens", llm_raw["max_output_tokens"], minimum=256),
         ),
         roles={r: str(m) for r, m in roles.items()},
         pipeline=PipelineCfg(
-            context_budget_tokens=int(pipe_raw["context_budget_tokens"]),
-            file_token_limit=int(pipe_raw["file_token_limit"]),
-            fix_rounds_max=int(pipe_raw["fix_rounds_max"]),
-            gate_retry=int(pipe_raw["gate_retry"]),
-            transport_retry=int(pipe_raw["transport_retry"]),
-            runner_timeout_s=int(pipe_raw["runner_timeout_s"]),
+            context_budget_tokens=_as_int("pipeline", "context_budget_tokens", pipe_raw["context_budget_tokens"], minimum=1000),
+            file_token_limit=_as_int("pipeline", "file_token_limit", pipe_raw["file_token_limit"], minimum=100),
+            fix_rounds_max=_as_int("pipeline", "fix_rounds_max", pipe_raw["fix_rounds_max"]),
+            gate_retry=_as_int("pipeline", "gate_retry", pipe_raw["gate_retry"]),
+            transport_retry=_as_int("pipeline", "transport_retry", pipe_raw["transport_retry"]),
+            runner_timeout_s=_as_int("pipeline", "runner_timeout_s", pipe_raw["runner_timeout_s"], minimum=1),
         ),
         prices=prices,
         runs_dir=runs_dir,

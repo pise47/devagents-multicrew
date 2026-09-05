@@ -42,7 +42,8 @@ class Runner:
         self.python = python or sys.executable
         # venv 创建/装依赖是基础设施步骤，不吃"测试执行超时"（防慢网络误杀）
         self._setup_timeout = max(timeout_s, 300)
-        self._installed: set[Path] = set()
+        # 已安装缓存键 = (workspace, requirements.txt 内容摘要)——修复轮改了依赖必须能重装
+        self._installed: set[tuple[Path, str]] = set()
 
     # ---- Python 项目 ----
 
@@ -55,6 +56,9 @@ class Runner:
         except subprocess.CalledProcessError as e:
             out = _tail((e.stdout or b"") + (e.stderr or b""))
             return TestRun("ERROR", e.returncode, out, time.monotonic() - start, str(ws), detail="依赖安装失败")
+        except subprocess.TimeoutExpired as e:
+            out = _tail(e.output)
+            return TestRun("ERROR", -1, out or "依赖安装/环境准备超时", time.monotonic() - start, str(ws), detail="环境准备超时")
         except OSError as e:
             return TestRun("ERROR", -1, str(e), time.monotonic() - start, str(ws), detail="执行器系统错误")
 
@@ -69,17 +73,19 @@ class Runner:
         return venv_py
 
     def _install_deps(self, ws: Path, venv_py: Path) -> None:
-        if ws in self._installed:
+        req = ws / "requirements.txt"
+        digest = _file_digest(req)  # 空/缺失 → 空摘要
+        key = (ws, digest)
+        if key in self._installed:
             return
         cmd = [str(venv_py), "-m", "pip", "install", "-q", "--disable-pip-version-check"]
-        req = ws / "requirements.txt"
         if req.exists():
             cmd += ["-r", str(req)]
         cmd += ["pytest"]
         subprocess.run(
             cmd, cwd=ws, check=True, capture_output=True, timeout=self._setup_timeout,
         )
-        self._installed.add(ws)
+        self._installed.add(key)
 
     def _run_pytest(self, ws: Path, venv_py: Path, start: float) -> TestRun:
         cmd = [str(venv_py), "-m", "pytest", "-q"]
@@ -105,6 +111,9 @@ class Runner:
             url, expects = str(spec["url"]), [str(t) for t in spec["expect_text"]]
         except (ValueError, KeyError, TypeError) as e:
             return TestRun("FAIL", -1, f"smoke.json 解析失败: {e}", 0.0, str(ws))
+        # url 必须是站内相对路径: 拒绝 @(用户信息)/://(跨主机)/反斜杠
+        if not url.startswith("/") or any(t in url for t in ("://", "@", "\\")):
+            return TestRun("FAIL", -1, f"smoke.json url 非法（须为站内路径如 /index.html）: {url!r}", 0.0, str(ws))
 
         port = _free_port()
         proc = subprocess.Popen(
@@ -156,3 +165,14 @@ def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def _file_digest(path: Path) -> str:
+    import hashlib
+
+    if not path.exists():
+        return ""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""

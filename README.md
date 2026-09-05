@@ -79,7 +79,7 @@ devagents/
 ## 测试
 
 ```bash
-python -m pytest                 # 91 项：mock LLM 驱动的状态机矩阵 + 真子进程 runner
+python -m pytest                 # 128 项：mock LLM 驱动的状态机矩阵 + 真子进程 runner（不触网用例为 mock 层）
 python -m pytest -m smoke        # 真 API 冒烟（低频，需 MIMO_API_KEY）
 ```
 

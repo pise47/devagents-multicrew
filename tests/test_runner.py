@@ -106,3 +106,28 @@ def test_frontend_smoke_missing_smoke_json(workspace):
     result = Runner(timeout_s=30).run_smoke(ws)
     assert result.verdict == "FAIL"
     assert "smoke.json" in result.stdout_tail
+
+
+@pytest.mark.parametrize("bad_url", ["@evil.com", "http://evil.com/", "\\evil\\x", "javascript://x"])
+def test_frontend_smoke_rejects_host_escape_url(workspace, bad_url):
+    """url 必须站内相对路径——防 @/:// 把请求打到任意主机。"""
+    ws = _fe_ws(workspace, url=bad_url)
+    result = Runner(timeout_s=30).run_smoke(ws)
+    assert result.verdict == "FAIL"
+    assert "url 非法" in result.stdout_tail
+
+
+def test_setup_timeout_caught_as_error(workspace, monkeypatch):
+    """venv/pip 超时（TimeoutExpired）必须收进 TestRun，不裸崩。"""
+    import devagents.runner as R
+
+    real_run = R.subprocess.run
+
+    def raiser(*a, **kw):
+        raise R.subprocess.TimeoutExpired(cmd="venv", timeout=1)
+
+    monkeypatch.setattr(R.subprocess, "run", raiser)
+    result = Runner(timeout_s=10).run_python_tests(workspace({"requirements.txt": "# x"}))
+    assert result.verdict == "ERROR"
+    assert "超时" in (result.detail + result.stdout_tail)
+    monkeypatch.setattr(R.subprocess, "run", real_run)

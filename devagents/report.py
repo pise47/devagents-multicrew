@@ -25,7 +25,10 @@ TERMINAL_REASON = {
 
 
 def new_run_id() -> str:
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+    """秒级时间戳 + 随机后缀: 同一秒多次 run 不互相覆盖 run 目录。"""
+    import secrets
+
+    return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
 
 
 def write_report(run_dir: Path, summary: dict) -> Path:

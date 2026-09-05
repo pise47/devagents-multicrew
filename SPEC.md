@@ -140,7 +140,7 @@ E:\devagents\
 
 - Python ≥3.10；标准库优先，运行时依赖仅 `requests`；测试 `pytest` + `pytest-cov`
 - 类型标注、模块单职责、函数短、注释中文简洁
-- 不流式；日志 = 控制台实时进度 + `runs/<run-id>/` 全量落盘（各阶段 prompt/response 摘要，复盘用）
+- 不流式；日志 = 控制台实时进度 + `runs/<run-id>/` 落盘（REPORT.md + report.json；每阶段记录 token/错误/文件清单与**全部尝试**，完整 prompt/response 原文暂不入盘——留后续增强防磁盘膨胀）
 - key 只走环境变量；禁硬编码/进日志/进 git
 
 ## 7. 测试策略（本系统自身）
@@ -151,8 +151,9 @@ E:\devagents\
 | 冒烟(e2e) | `pytest -m smoke`: 真 MiMo API 跑 demo（§9），低频标 slow |
 
 **产出项目验证（runner.py，确定性，无 node）**:
-- Python: 工作区 venv → `pip install -r requirements.txt` → `python -m pytest --cov`（覆盖率报告，本版不设门槛）
+- Python: 工作区 venv → `pip install -r requirements.txt` → `python -m pytest -q`（当前实现为纯 pytest；`--cov` 覆盖率输出留后续增强，数值不设门槛）
 - 单页前端: `python -m http.server` → requests 检查 GET 200 + SPEC 关键元素 → 关闭；JS 语法由浏览器解析兜底（局限本版接受，node 检查留后续版本）
+- 每次 runner 执行后由 pipeline 机械把 verdict 追加进 TEST.md（§4.3 结论归 runner 的落地形式）
 
 ## 8. 边界
 

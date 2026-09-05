@@ -67,6 +67,13 @@ def test_nested_safe_paths_allowed():
     assert validate_rel_path("assets/css/app.css") == "assets/css/app.css"
 
 
+@pytest.mark.parametrize("bad", ["a<b.py", "a>b.py", 'a"b.py', "a|b.py", "a?b.py", "a*b.py", "a. ", "a/ b.py", "a\x00b.py", "dir/a.."])
+def test_windows_illegal_chars_rejected(bad):
+    """Windows 文件名字符与首尾空格——write_text 会 OSError 的路径提前拒。"""
+    with pytest.raises(ProtocolError):
+        validate_rel_path(bad)
+
+
 def test_parse_rejects_traversal_paths_in_blocks():
     with pytest.raises(ProtocolError):
         parse_envelopes(S.env("../evil.py", "x"))

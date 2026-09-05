@@ -148,6 +148,9 @@ class OpenAIClient(_LLMClient):
             raise NetworkError(f"连接失败 {self.base_url}: {e}") from e
         except requests.Timeout as e:
             raise NetworkError(f"请求超时({self.timeout_s}s): {e}") from e
+        except requests.RequestException as e:
+            # 其余 requests 异常（ChunkedEncoding/ContentDecoding 等）必须收进 LLMError 体系
+            raise NetworkError(f"请求异常: {e}") from e
         try:
             resp.raise_for_status()
         except requests.HTTPError:

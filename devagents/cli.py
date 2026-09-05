@@ -129,13 +129,19 @@ def main(argv: list[str] | None = None) -> int:
     if not args.command:
         parser.print_help()
         return 0
+    # report 只读历史不需要 key（key 过期/轮换时照样能复盘）
+    need_key = args.command == "run"
     try:
-        config = config_mod.load_config()
+        config = config_mod.load_config(require_key=need_key)
     except config_mod.ConfigError as e:
         print(f"[devagents] 配置错误:\n{e}", file=sys.stderr)
         return 2
 
     if args.command == "run":
+        if not config.llm.api_key:  # 双保险: run 路径必须真 key
+            print("[devagents] 配置错误:\n缺少 API Key: 请设置环境变量 "
+                  f"{config.llm.key_env} 后重试", file=sys.stderr)
+            return 2
         task = None
         if args.task_file:
             task = Path(args.task_file).read_text(encoding="utf-8").strip()
