@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+**/.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.coverage
+coverage.xml
+htmlcov/
+
+# DevAgents 运行产物
+runs/
+
+# 密钥兜底（任何形式的 key 文件都禁止入库）
+*.key
+.env

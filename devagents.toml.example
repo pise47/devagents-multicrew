@@ -1,0 +1,41 @@
+# DevAgents 运行时配置示例（无真实密钥，占位符）
+# 首次运行若 devagents.toml 缺失，会自动复制本文件过去并提示补配。
+
+[llm]
+# protocol = "openai"（按量 sk-key）: base_url 用 https://api.xiaomimimo.com/v1，key_env=MIMO_API_KEY
+# protocol = "anthropic"（Token Plan 套餐 tp-key）: base_url 用 https://token-plan-cn.xiaomimimo.com/anthropic，key_env=MIMO_TP_API_KEY
+# ⚠️ 实测（2026-09-05）: anthropic 端接受无 [1m] 后缀模型名、拒绝 [1m]（400 Unsupported model）
+# ⚠️ 注意: Token Plan tp-key 官方 ToS 限交互式用途，自动化管线使用属用户自担风险
+protocol = "anthropic"
+base_url = "https://token-plan-cn.xiaomimimo.com/anthropic"
+# 从哪个环境变量读 API Key（只走环境变量，禁止硬编码）
+key_env = "MIMO_TP_API_KEY"
+timeout_s = 180
+max_output_tokens = 16384   # anthropic 协议必填 max_tokens；角色大文件输出需要余量
+
+[roles]
+# 推理重角色（spec/arch/review）→ mimo-v2.5-pro；量大型（code/test）→ mimo-v2.5。
+# 直连 API 用官方模型名，不带 [1m] 后缀。
+spec = "mimo-v2.5-pro"
+arch = "mimo-v2.5-pro"
+code = "mimo-v2.5"
+test = "mimo-v2.5"
+review = "mimo-v2.5-pro"
+
+[pipeline]
+context_budget_tokens = 60000   # 单角色上下文总预算（主动低于模型窗口控成本）
+file_token_limit = 12000        # 单文件超限截断阈值
+fix_rounds_max = 2              # 修复环上限
+gate_retry = 1                  # 产物 gate / 信封解析失败，本阶段重试次数
+transport_retry = 1             # llm 瞬时错误（Network/HTTP 5xx/429）重试次数
+runner_timeout_s = 180          # 产出项目测试/冒烟子进程超时
+
+# 模型单价表（元 / 百万 token）。空表 = 账单只报 token 不折算费用。
+# 实测平台账单后可填入，示例格式:
+# [prices.mimo-v2.5-pro]
+# input = 0.0
+# output = 0.0
+[prices]
+
+[storage]
+runs_dir = "runs"   # 运行报告目录（相对项目根）

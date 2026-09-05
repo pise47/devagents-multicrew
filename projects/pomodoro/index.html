@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>（25:00）番茄钟</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .timer-container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2);
+            text-align: center;
+            width: 300px;
+        }
+        .timer-display {
+            font-size: 48px;
+            font-weight: bold;
+            color: #2d3436;
+            margin-bottom: 30px;
+            font-family: 'Courier New', monospace;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        #start-btn {
+            background: #00b894;
+            color: white;
+        }
+        #start-btn:hover {
+            background: #00a381;
+            transform: translateY(-2px);
+        }
+        #pause-btn {
+            background: #fdcb6e;
+            color: #2d3436;
+        }
+        #pause-btn:hover {
+            background: #f9b234;
+            transform: translateY(-2px);
+        }
+        #reset-btn {
+            background: #dfe6e9;
+            color: #2d3436;
+        }
+        #reset-btn:hover {
+            background: #b2bec3;
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body>
+    <div class="timer-container">
+        <div class="timer-display" id="timer-display">25:00</div>
+        <div class="controls">
+            <button id="start-btn">开始</button>
+            <button id="pause-btn">暂停</button>
+            <button id="reset-btn">重置</button>
+        </div>
+    </div>
+
+    <script>
+        // 计时器状态变量
+        let totalSeconds = 25 * 60;
+        let timerInterval = null;
+        let isRunning = false;
+
+        // DOM 元素
+        const timerDisplay = document.getElementById('timer-display');
+        const startBtn = document.getElementById('start-btn');
+        const pauseBtn = document.getElementById('pause-btn');
+        const resetBtn = document.getElementById('reset-btn');
+
+        // 更新显示
+        function updateDisplay() {
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            const timeString = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            timerDisplay.textContent = timeString;
+            
+            // 更新页面标题
+            document.title = `（${timeString}）番茄钟`;
+        }
+
+        // 启动或恢复计时
+        function startTimer() {
+            if (!isRunning) {
+                isRunning = true;
+                timerInterval = setInterval(() => {
+                    if (totalSeconds > 0) {
+                        totalSeconds--;
+                        updateDisplay();
+                    } else {
+                        timerEnded();
+                    }
+                }, 1000);
+            }
+        }
+
+        // 暂停计时
+        function pauseTimer() {
+            if (isRunning) {
+                isRunning = false;
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+        }
+
+        // 重置计时
+        function resetTimer() {
+            pauseTimer();
+            totalSeconds = 25 * 60;
+            updateDisplay();
+        }
+
+        // 计时结束处理
+        function timerEnded() {
+            pauseTimer();
+            alert('时间结束！');
+            resetTimer();
+        }
+
+        // 事件绑定
+        startBtn.addEventListener('click', startTimer);
+        pauseBtn.addEventListener('click', pauseTimer);
+        resetBtn.addEventListener('click', resetTimer);
+
+        // 初始化显示
+        updateDisplay();
+    </script>
+</body>
+</html>

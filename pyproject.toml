@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "devagents"
+version = "0.1.0"
+description = "多智能体代码开发系统 — 一条命令 + 一句需求 → 可运行、可验证的代码项目"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.28"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov>=4"]
+
+[project.scripts]
+devagents = "devagents.cli:main"
+
+[tool.setuptools]
+packages = ["devagents"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["smoke: 真 API 端到端（低频，需 MIMO_API_KEY）"]
+addopts = "-m 'not smoke'"
